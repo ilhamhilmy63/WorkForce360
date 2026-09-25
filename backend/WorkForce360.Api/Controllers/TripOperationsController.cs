@@ -1,0 +1,26 @@
+using System.Security.Claims;using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Mvc;using Microsoft.EntityFrameworkCore;using WorkForce360.Api.Data;using WorkForce360.Api.Models;
+namespace WorkForce360.Api.Controllers;
+[ApiController,Route("api/quotations"),Authorize]
+public class QuotationsController(TripDbContext db):ControllerBase
+{
+ [HttpGet]public async Task<IActionResult> Get(){var q=db.Quotations.AsNoTracking().Include(x=>x.TripRequest).ThenInclude(x=>x.Tourist).ThenInclude(x=>x.User).Include(x=>x.Lines).AsQueryable();if(User.IsInRole("Tourist")){var uid=UserId();q=q.Where(x=>x.TripRequest.Tourist.UserId==uid);}return Ok(await q.OrderByDescending(x=>x.CreatedAt).Select(x=>new{x.Id,x.TripRequestId,tourist=x.TripRequest.Tourist.User.FullName,x.TotalLkr,x.TotalUsd,x.FxRate,status=x.Status.ToString(),x.Version,x.CreatedAt}).ToListAsync());}
+ [HttpPost("{id:guid}/calculate"),Authorize(Roles="OperationsManager")]public async Task<IActionResult> Calculate(Guid id){var q=await db.Quotations.Include(x=>x.TripRequest).Include(x=>x.Lines).SingleOrDefaultAsync(x=>x.Id==id);if(q is null)return NotFound();var days=q.TripRequest.EndDate.DayNumber-q.TripRequest.StartDate.DayNumber+1;var baseCost=days*25000m+q.TripRequest.Pax*days*8000m;if(q.Lines.Count>0)db.QuotationLines.RemoveRange(q.Lines);db.QuotationLines.Add(new QuotationLine{QuotationId=q.Id,LineType="package",Description="Guide, vehicle and accommodation estimate",Qty=days,UnitLkr=baseCost/days,AmountLkr=baseCost});q.SubtotalLkr=baseCost;q.TotalLkr=baseCost*(1+q.MarginPct/100);q.TotalUsd=Math.Round(q.TotalLkr/q.FxRate,2);q.Status=QuoteStatus.PendingApproval;await db.SaveChangesAsync();return Ok(new{q.Id,q.SubtotalLkr,q.TotalLkr,q.TotalUsd,q.FxRate,status=q.Status.ToString()});}
+ [HttpPost("{id:guid}/approve"),Authorize(Roles="OperationsManager")]public async Task<IActionResult> Approve(Guid id,DecisionDto input){var q=await db.Quotations.Include(x=>x.TripRequest).SingleOrDefaultAsync(x=>x.Id==id);if(q is null)return NotFound();await using var tx=await db.Database.BeginTransactionAsync();q.Status=QuoteStatus.Approved;q.TripRequest.Status=TripStatus.Confirmed;db.ApprovalDecisions.Add(new ApprovalDecision{QuotationId=id,DecidedBy=UserId(),Decision="Approved",Comment=input.Comment});db.AuditLogs.Add(new TripAuditLog{ActorId=UserId(),Action="QuotationApproved",Entity="Quotation",EntityId=id});await db.SaveChangesAsync();await tx.CommitAsync();return NoContent();}
+ [HttpPost("{id:guid}/reject"),Authorize(Roles="OperationsManager")]public Task<IActionResult> Reject(Guid id,DecisionDto input)=>Decide(id,input,"Rejected",QuoteStatus.Rejected,TripStatus.Rejected);
+ [HttpPost("{id:guid}/request-revision"),Authorize(Roles="OperationsManager")]public Task<IActionResult> Revise(Guid id,DecisionDto input)=>Decide(id,input,"RevisionRequested",QuoteStatus.RevisionRequested,TripStatus.RevisionRequested);
+ private async Task<IActionResult> Decide(Guid id,DecisionDto input,string name,QuoteStatus qs,TripStatus ts){var q=await db.Quotations.Include(x=>x.TripRequest).SingleOrDefaultAsync(x=>x.Id==id);if(q is null)return NotFound();q.Status=qs;q.TripRequest.Status=ts;db.ApprovalDecisions.Add(new ApprovalDecision{QuotationId=id,DecidedBy=UserId(),Decision=name,Comment=input.Comment});db.AuditLogs.Add(new TripAuditLog{ActorId=UserId(),Action=$"Quotation{name}",Entity="Quotation",EntityId=id});await db.SaveChangesAsync();return NoContent();}
+ private Guid UserId()=>Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)??User.FindFirstValue("sub")!);public record DecisionDto(string? Comment);
+}
+
+[ApiController,Route("api/dashboard"),Authorize(Roles="OperationsManager,Admin")]
+public class TripDashboardController(TripDbContext db):ControllerBase
+{
+ [HttpGet]public async Task<IActionResult> Get(){var start=new DateTime(DateTime.UtcNow.Year,DateTime.UtcNow.Month,1,0,0,0,DateTimeKind.Utc);return Ok(new{totalRequests=await db.TripRequests.CountAsync(x=>!x.IsDeleted),pendingApproval=await db.TripRequests.CountAsync(x=>x.Status==TripStatus.PendingApproval),confirmedTrips=await db.TripRequests.CountAsync(x=>x.Status==TripStatus.Confirmed),revenueThisMonth=await db.Quotations.Where(x=>x.Status==QuoteStatus.Approved&&x.UpdatedAt>=start).SumAsync(x=>x.TotalUsd),activeGuides=await db.Guides.CountAsync(x=>x.IsActive&&!x.IsDeleted),activeVehicles=await db.Vehicles.CountAsync(x=>x.IsActive&&!x.IsDeleted),hotels=await db.Hotels.CountAsync(x=>!x.IsDeleted),recent=await db.TripRequests.OrderByDescending(x=>x.CreatedAt).Take(5).Select(x=>new{x.Id,x.Objective,status=x.Status.ToString(),x.StartDate,x.EndDate}).ToListAsync()});}
+}
+
+[ApiController,Route("api/admin/users"),Authorize(Roles="Admin")]
+public class TripUsersController(TripDbContext db):ControllerBase
+{
+ [HttpGet]public async Task<IActionResult> Get()=>Ok(await db.Users.AsNoTracking().OrderBy(x=>x.FullName).Select(x=>new{x.Id,x.FullName,x.Email,role=x.Role.ToString(),x.IsActive}).ToListAsync());
+ [HttpPut("{id:guid}/role")]public async Task<IActionResult> Role(Guid id,RoleDto r){if(!Enum.TryParse<TripRole>(r.Role,true,out var role))return ValidationProblem("Invalid role");var u=await db.Users.FindAsync(id);if(u is null)return NotFound();u.Role=role;await db.SaveChangesAsync();return NoContent();}public record RoleDto(string Role);
+}
