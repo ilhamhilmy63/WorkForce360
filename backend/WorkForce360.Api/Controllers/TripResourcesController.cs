@@ -1,7 +1,7 @@
-using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Mvc;using Microsoft.EntityFrameworkCore;using WorkForce360.Api.Data;using WorkForce360.Api.Models;
+using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Mvc;using Microsoft.EntityFrameworkCore;using WorkForce360.Api.Data;using WorkForce360.Api.Models;using WorkForce360.Api.Services;
 namespace WorkForce360.Api.Controllers;
 [ApiController,Route("api/resources"),Authorize(Roles="OperationsManager")]
-public class TripResourcesController(TripDbContext db):ControllerBase
+public class TripResourcesController(TripDbContext db,ResourceHoldService holds):ControllerBase
 {
  [HttpGet("guides")]public async Task<IActionResult> Guides()=>Ok(await db.Guides.AsNoTracking().Where(x=>!x.IsDeleted).OrderBy(x=>x.Name).ToListAsync());
  [HttpPost("guides")]public async Task<IActionResult> AddGuide(Guide x){x.Id=Guid.NewGuid();db.Add(x);await db.SaveChangesAsync();return Created($"/api/resources/guides/{x.Id}",x);}
@@ -15,6 +15,7 @@ public class TripResourcesController(TripDbContext db):ControllerBase
  [HttpPost("hotels")]public async Task<IActionResult> AddHotel(Hotel x){x.Id=Guid.NewGuid();db.Add(x);await db.SaveChangesAsync();return Created($"/api/resources/hotels/{x.Id}",x);}
  [HttpDelete("hotels/{id:guid}")]public async Task<IActionResult> DeleteHotel(Guid id){var x=await db.Hotels.FindAsync(id);if(x is null)return NotFound();x.IsDeleted=true;await db.SaveChangesAsync();return NoContent();}
  [HttpGet("availability")]public async Task<IActionResult> Availability(string type,DateOnly from,DateOnly to){if(to<from)return ValidationProblem("Invalid date range.");var held=await db.ResourceHolds.AsNoTracking().Where(x=>x.ResourceType==type&&x.Status==HoldStatus.Held&&x.FromDate<=to&&x.ToDate>=from).Select(x=>x.ResourceId).ToListAsync();return type.ToLower() switch{"guide"=>Ok(await db.Guides.Where(x=>x.IsActive&&!x.IsDeleted&&!held.Contains(x.Id)).ToListAsync()),"vehicle"=>Ok(await db.Vehicles.Where(x=>x.IsActive&&!x.IsDeleted&&!held.Contains(x.Id)).ToListAsync()),"room"=>Ok(await db.RoomTypes.Where(x=>!held.Contains(x.Id)).ToListAsync()),_=>BadRequest(new ProblemDetails{Title="Type must be guide, vehicle or room"})};}
+ [HttpPost("holds")]public async Task<IActionResult> CreateHold(CreateResourceHold request,CancellationToken token){var result=await holds.CreateAsync(request,token);return result.Type switch{ResourceHoldResultType.Created=>Created($"/api/resources/holds/{result.Hold!.Id}",result.Hold),ResourceHoldResultType.Invalid=>BadRequest(new ValidationProblemDetails(new Dictionary<string,string[]>(result.ValidationErrors!))),ResourceHoldResultType.NotFound=>NotFound(new ProblemDetails{Title=result.Error}),ResourceHoldResultType.Conflict=>Conflict(new ProblemDetails{Title=result.Error}),_=>StatusCode(500)};}
 }
 
 [ApiController,Route("api/attractions"),Authorize]
