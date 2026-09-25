@@ -1,2 +1,2 @@
-# WorkForce360
-WorkForce360 – A unified workforce management platform for employee records, attendance, scheduling, and reporting.
+# TripCraft
+TripCraft – An integrated AI-powered tour management platform for trip planning, itinerary generation, resource allocation, quotation management, approval workflows, and reporting.
