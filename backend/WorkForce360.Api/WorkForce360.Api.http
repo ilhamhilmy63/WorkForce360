@@ -1,0 +1,6 @@
+@WorkForce360.Api_HostAddress = http://localhost:5170
+
+GET {{WorkForce360.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
